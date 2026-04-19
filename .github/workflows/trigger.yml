@@ -11,7 +11,7 @@ on:
   # requirement (30 1 and 0 13) exactly as specified.
   schedule:
     - cron: "30 1 * * *"   # 07:30 AM BST (morning)
-    - cron: "0 19 * * *"   # 08:00 PM BST (evening)
+    - cron: "0 20 * * *"   # 09:00 PM BST (evening)
 
   # ── Manual trigger ──────────────────────────────────────────────────────────
   # Allows you to kick off a digest run from the GitHub Actions UI at any time.
