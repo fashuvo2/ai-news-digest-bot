@@ -7,7 +7,7 @@ on:
   #   0 13 * * *  →  13:00 UTC  =  07:00 PM BDT  (evening digest)
   schedule:
     - cron: "0 1 * * *"    # 07:00 AM BDT (morning)
-    - cron: "0 15 * * *"   # 09:00 PM BDT (evening - temp test)
+    - cron: "0 13 * * *"   # 07:00 PM BDT (evening)
 
   # ── Manual trigger ──────────────────────────────────────────────────────────
   # Allows you to kick off a digest run from the GitHub Actions UI at any time.
