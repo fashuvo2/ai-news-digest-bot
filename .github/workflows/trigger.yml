@@ -2,16 +2,12 @@ name: AI News Digest – Scheduled Trigger
 
 on:
   # ── Scheduled runs ──────────────────────────────────────────────────────────
-  # Times are in UTC. BST = UTC+1, so:
-  #   30 1 * * *  →  01:30 UTC  =  07:30 AM BST  (morning digest)
-  #   0 13 * * *  →  13:00 UTC  =  14:00 PM BST  (wait — see note below)
-  #
-  # NOTE: "7:00 PM BST" = 18:00 BST = 17:00 UTC. Adjust if your timezone
-  # observes daylight saving differently. The schedule below matches the
-  # requirement (30 1 and 0 13) exactly as specified.
+  # Times are in UTC. BDT = UTC+6, so:
+  #   0 1 * * *   →  01:00 UTC  =  07:00 AM BDT  (morning digest)
+  #   0 13 * * *  →  13:00 UTC  =  07:00 PM BDT  (evening digest)
   schedule:
-    - cron: "30 1 * * *"   # 07:30 AM BST (morning)
-    - cron: "0 20 * * *"   # 09:00 PM BST (evening)
+    - cron: "0 1 * * *"    # 07:00 AM BDT (morning)
+    - cron: "0 13 * * *"   # 07:00 PM BDT (evening)
 
   # ── Manual trigger ──────────────────────────────────────────────────────────
   # Allows you to kick off a digest run from the GitHub Actions UI at any time.
