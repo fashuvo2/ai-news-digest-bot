@@ -44,8 +44,8 @@ export async function POST(request) {
   console.log("[digest-tech] Starting tech digest run…");
 
   try {
-    // Step 2 — Fetch recent articles (last 12 hours) from all tech RSS sources.
-    const recentArticles = await fetchRecentArticles(12, TECH_SOURCES);
+    // Step 2 — Fetch recent articles (last 24 hours) from all tech RSS sources.
+    const recentArticles = await fetchRecentArticles(24, TECH_SOURCES);
 
     // Extract unique URLs for the deduplication check.
     const recentUrls = recentArticles
