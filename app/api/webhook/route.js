@@ -71,10 +71,15 @@ export async function POST(request) {
   const num = parseInt(text, 10);
   if (!isNaN(num) && String(num) === text && num > 0) {
     try {
-      const article = await getArticle(num);
+      // Check AI namespace first, then tech namespace.
+      let article = await getArticle(num, "ai");
+      if (!article) article = await getArticle(num, "tech");
 
       if (!article) {
-        const count = await getArticleCount();
+        const count = Math.max(
+          await getArticleCount("ai"),
+          await getArticleCount("tech")
+        );
         const countMsg =
           count > 0
             ? `সর্বশেষ ডাইজেস্টে ${count}টি আর্টিকেল ছিল। ১–${count} এর মধ্যে একটি নম্বর পাঠান।`
