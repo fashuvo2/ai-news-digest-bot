@@ -18,7 +18,7 @@ import { NextResponse } from "next/server";
 import { fetchRecentArticles } from "@/lib/fetchFeeds";
 import { summarizeArticles } from "@/lib/summarize";
 import { sendDigest, sendMessage } from "@/lib/telegram";
-import { filterUnseen, markSeen } from "@/lib/storage";
+import { filterUnseen, markSeen, saveArticles } from "@/lib/storage";
 
 // ── Security guard ─────────────────────────────────────────────────────────────
 
@@ -85,8 +85,9 @@ export async function POST(request) {
     // Step 5 — Summarise with Claude (returns Bengali text + token usage).
     const { summary, usage } = await summarizeArticles(newArticles);
 
-    // Step 6 — Persist the newly processed URLs in KV (72-hour TTL).
-    await markSeen(newUrls);
+    // Step 6 — Persist the newly processed URLs in KV (72-hour TTL),
+    // and save the article list for deep-dive lookups.
+    await Promise.all([markSeen(newUrls), saveArticles(newArticles)]);
 
     // Step 7 — Send the digest (with token footer) to Telegram.
     await sendDigest(summary, usage);
