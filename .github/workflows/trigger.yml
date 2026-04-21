@@ -17,7 +17,7 @@ jobs:
             --silent \
             --output /tmp/response.json \
             --write-out "%{http_code}" \
-            --max-time 120 \
+            --max-time 300 \
             --request POST \
             --header "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             --header "Content-Type: application/json" \
