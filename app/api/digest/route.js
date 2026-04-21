@@ -87,7 +87,8 @@ export async function POST(request) {
 
     // Step 6 — Persist the newly processed URLs in KV (72-hour TTL),
     // and save the article list for deep-dive lookups.
-    await Promise.all([markSeen(newUrls), saveArticles(newArticles)]);
+    await markSeen(newUrls);
+    await saveArticles(newArticles);
 
     // Step 7 — Send the digest (with token footer) to Telegram.
     await sendDigest(summary, usage);
