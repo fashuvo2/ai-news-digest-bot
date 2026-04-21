@@ -52,8 +52,8 @@ export async function POST(request) {
   console.log("[digest] Starting digest run…");
 
   try {
-    // Step 2 — Fetch recent articles (last 12 hours) from all RSS sources.
-    const recentArticles = await fetchRecentArticles(12);
+    // Step 2 — Fetch recent articles (last 24 hours) from all RSS sources.
+    const recentArticles = await fetchRecentArticles(24);
 
     // Extract unique URLs for the deduplication check.
     const recentUrls = recentArticles
