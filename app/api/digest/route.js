@@ -15,9 +15,9 @@
  */
 
 import { NextResponse } from "next/server";
-import { fetchRecentArticles } from "@/lib/fetchFeeds";
-import { summarizeArticles } from "@/lib/summarize";
-import { sendDigest, sendMessage } from "@/lib/telegram";
+import { fetchRecentArticles, filterPromoArticles } from "@/lib/fetchFeeds";
+import { summarizeBatched } from "@/lib/summarize";
+import { sendBatchedDigest, sendMessage } from "@/lib/telegram";
 import { filterUnseen, markSeen, saveArticles } from "@/lib/storage";
 
 // ── Security guard ─────────────────────────────────────────────────────────────
@@ -64,13 +64,16 @@ export async function POST(request) {
     const newUrls = await filterUnseen(recentUrls, "ai");
 
     // Build the filtered article list (preserving full metadata for Claude).
-    const newArticles = recentArticles.filter((a) =>
+    const unseenArticles = recentArticles.filter((a) =>
       newUrls.includes(a.link || a.url)
     );
 
+    // Filter out promotional articles.
+    const { kept: newArticles, totalExcluded, excludedReasons } = filterPromoArticles(unseenArticles);
+
     console.log(
       `[digest] ${recentArticles.length} recent articles fetched; ` +
-        `${newArticles.length} are new (not yet seen)`
+        `${unseenArticles.length} are new; ${totalExcluded} excluded as promo`
     );
 
     // Step 4 — Nothing new? Send a short "no news" notification and exit.
@@ -82,16 +85,23 @@ export async function POST(request) {
       });
     }
 
-    // Step 5 — Summarise with Claude (returns Bengali text + token usage).
-    const { summary, usage } = await summarizeArticles(newArticles, "ai");
+    // Step 5 — Summarise with Claude in batches of 25 articles.
+    const { summaries, usage } = await summarizeBatched(newArticles, "ai");
 
     // Step 6 — Persist the newly processed URLs in KV (72-hour TTL),
     // and save the article list for deep-dive lookups.
     await markSeen(newUrls, "ai");
     await saveArticles(newArticles, "ai");
 
-    // Step 7 — Send the digest (with token footer) to Telegram.
-    await sendDigest(summary, usage);
+    // Step 7 — Send all batch messages to Telegram (token footer on last).
+    const promoNote =
+      totalExcluded > 0
+        ? `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
+          Object.entries(excludedReasons)
+            .map(([kw, n]) => `${kw} (${n})`)
+            .join(", ")
+        : "";
+    await sendBatchedDigest(summaries, usage, promoNote);
 
     console.log("[digest] Run complete.");
 
