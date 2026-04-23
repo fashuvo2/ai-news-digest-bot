@@ -11,24 +11,60 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send POST request to /api/digest-tech
+      - name: Process tech digest in batches
         run: |
-          HTTP_STATUS=$(curl \
-            --silent \
-            --output /tmp/response.json \
-            --write-out "%{http_code}" \
-            --max-time 360 \
-            --request POST \
-            --header "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            --header "Content-Type: application/json" \
-            "https://${{ secrets.VERCEL_APP_URL }}/api/digest-tech")
+          MAX_BATCHES=30
+          COMPLETED=false
 
-          echo "HTTP status: $HTTP_STATUS"
-          echo "Response body:"
-          cat /tmp/response.json
+          for i in $(seq 1 $MAX_BATCHES); do
+            echo "--- Batch $i ---"
 
-          # Fail the workflow step if the API returned a non-2xx status.
-          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-            echo "ERROR: API returned HTTP $HTTP_STATUS"
+            HTTP_STATUS=$(curl \
+              --silent \
+              --output /tmp/response.json \
+              --write-out "%{http_code}" \
+              --max-time 90 \
+              --request POST \
+              --header "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              --header "Content-Type: application/json" \
+              "https://${{ secrets.VERCEL_APP_URL }}/api/digest-tech")
+
+            echo "HTTP status: $HTTP_STATUS"
+            echo "Response body:"
+            cat /tmp/response.json
+
+            if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+              echo "ERROR: API returned HTTP $HTTP_STATUS"
+              exit 1
+            fi
+
+            STATUS=$(python3 -c "
+import json
+try:
+    d = json.load(open('/tmp/response.json'))
+    print(d.get('status', 'unknown'))
+except Exception as e:
+    print('parse_error')
+" 2>/dev/null)
+
+            echo "Batch status: $STATUS"
+
+            if [ "$STATUS" = "complete" ] || [ "$STATUS" = "no_new_articles" ]; then
+              echo "Digest complete after $i batch(es)."
+              COMPLETED=true
+              break
+            fi
+
+            if [ "$STATUS" = "parse_error" ] || [ "$STATUS" = "unknown" ]; then
+              echo "ERROR: Could not parse API response."
+              exit 1
+            fi
+
+            # Brief pause between batches.
+            sleep 5
+          done
+
+          if [ "$COMPLETED" != "true" ]; then
+            echo "ERROR: Digest did not complete after $MAX_BATCHES batches."
             exit 1
           fi

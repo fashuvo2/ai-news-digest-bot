@@ -1,31 +1,43 @@
 /**
  * /app/api/digest-tech/route.js
  *
- * Tech news digest endpoint. Triggered manually via GitHub Actions.
+ * Tech news digest endpoint — stateful batch processing.
  *
- * Flow:
- *  1. Validate the Authorization header against CRON_SECRET.
- *  2. Fetch all tech RSS/Atom feeds and keep only articles from the last 12 hours.
- *  3. Filter out URLs already stored in Redis (already processed, "tech" namespace).
- *  4. If nothing new → send a "no news" Telegram message and exit.
- *  5. Send the new articles to Claude → receive Bengali digest + token usage.
- *  6. Save the newly processed URLs to Redis (72-hour TTL, "tech" namespace).
- *  7. Send the digest + token footer to Telegram.
- *  8. Return JSON with status, article count, and token usage.
+ * Because Vercel's Free plan limits functions to 60 seconds, this endpoint
+ * processes articles in small batches across multiple calls. GitHub Actions
+ * loops until the queue is drained.
+ *
+ * First call:
+ *   1. Validate auth.
+ *   2. Fetch RSS feeds, deduplicate, filter promos.
+ *   3. Save all articles to Redis for deep-dive lookups (correct 1-based indices).
+ *   4. Mark all URLs as seen.
+ *   5. Store remaining articles as a queue in Redis.
+ *   6. Process the first batch → Telegram.
+ *   7. Return { status: "batching" } or { status: "complete" } if ≤ BATCH_SIZE articles.
+ *
+ * Subsequent calls:
+ *   1. Validate auth.
+ *   2. Pop next batch from Redis queue.
+ *   3. Process → Telegram.
+ *   4. Return { status: "batching" } or { status: "complete" }.
  */
 
 import { NextResponse } from "next/server";
 import { fetchRecentArticles, filterPromoArticles } from "@/lib/fetchFeeds";
-import { summarizeBatched } from "@/lib/summarize";
-import { sendBatchedDigest, sendMessage } from "@/lib/telegram";
-import { filterUnseen, markSeen, saveArticles } from "@/lib/storage";
+import { summarizeArticles } from "@/lib/summarize";
+import { sendMessage } from "@/lib/telegram";
+import {
+  filterUnseen, markSeen, saveArticles,
+  getQueue, setQueue, setQueueMeta, clearQueueMeta,
+} from "@/lib/storage";
 import TECH_SOURCES from "@/lib/sources-tech";
 
-// Allow up to 300 seconds — tech feeds can be high-volume.
-export const maxDuration = 300;
+// Allow up to 60 seconds (Vercel Free plan maximum).
+export const maxDuration = 60;
 
-// Cap articles sent to Claude to stay within the time budget (3 batches of 25).
-const MAX_ARTICLES = 75;
+// Articles per batch — keeps each invocation well within the 60 s limit.
+const BATCH_SIZE = 10;
 
 // ── Security guard ─────────────────────────────────────────────────────────────
 
@@ -42,77 +54,121 @@ function isAuthorised(request) {
 // ── Route handler ──────────────────────────────────────────────────────────────
 
 export async function POST(request) {
-  // Step 1 — Authorisation check.
   if (!isAuthorised(request)) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
 
-  console.log("[digest-tech] Starting tech digest run…");
+  console.log("[digest-tech] Batch call received…");
 
   try {
-    // Step 2 — Fetch recent articles (last 12 hours) from all tech RSS sources.
-    const recentArticles = await fetchRecentArticles(12, TECH_SOURCES);
+    let queue = await getQueue("tech");
 
-    // Extract unique URLs for the deduplication check.
-    const recentUrls = recentArticles
-      .map((a) => a.link || a.url)
-      .filter(Boolean);
+    // ── First call: fetch articles and initialise queue ──────────────────────
+    if (!queue) {
+      console.log("[digest-tech] No queue found — fetching articles…");
 
-    // Step 3 — Filter out articles we've already processed ("tech" namespace).
-    const newUrls = await filterUnseen(recentUrls, "tech");
+      const recentArticles = await fetchRecentArticles(12, TECH_SOURCES);
+      const recentUrls = recentArticles.map((a) => a.link || a.url).filter(Boolean);
+      const newUrls = await filterUnseen(recentUrls, "tech");
+      const unseenArticles = recentArticles.filter((a) =>
+        newUrls.includes(a.link || a.url)
+      );
+      const { kept: newArticles, totalExcluded, excludedReasons } =
+        filterPromoArticles(unseenArticles);
 
-    // Build the filtered article list (preserving full metadata for Claude).
-    const unseenArticles = recentArticles.filter((a) =>
-      newUrls.includes(a.link || a.url)
-    );
+      console.log(
+        `[digest-tech] ${recentArticles.length} fetched; ` +
+          `${unseenArticles.length} new; ${totalExcluded} promo excluded`
+      );
 
-    // Filter out promotional articles.
-    const { kept: keptArticles, totalExcluded, excludedReasons } = filterPromoArticles(unseenArticles);
+      if (newArticles.length === 0) {
+        await sendMessage("কোনো নতুন প্রযুক্তি খবর নেই।");
+        return NextResponse.json({ status: "no_new_articles" });
+      }
 
-    // Cap to the most recent MAX_ARTICLES to stay within the time budget.
-    const newArticles = keptArticles.slice(0, MAX_ARTICLES);
-    const capped = keptArticles.length - newArticles.length;
+      const promoNote =
+        totalExcluded > 0
+          ? `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
+            Object.entries(excludedReasons)
+              .map(([kw, n]) => `${kw} (${n})`)
+              .join(", ")
+          : "";
 
-    console.log(
-      `[digest-tech] ${recentArticles.length} recent articles fetched; ` +
-        `${unseenArticles.length} are new; ${totalExcluded} excluded as promo` +
-        (capped > 0 ? `; ${capped} capped` : "")
-    );
+      // Save all articles upfront with correct 1-based indices for deep-dive.
+      await saveArticles(newArticles, "tech");
+      // Mark all URLs seen now so re-runs don't reprocess them.
+      await markSeen(newUrls, "tech");
 
-    // Step 4 — Nothing new? Send a short "no news" notification and exit.
-    if (newArticles.length === 0) {
-      await sendMessage("কোনো নতুন প্রযুক্তি খবর নেই।");
-      return NextResponse.json({
-        status: "no_new_articles",
-        message: "No new tech articles found in the last 12 hours.",
-      });
+      // Store queue state.
+      await setQueue(newArticles, "tech");
+      await setQueueMeta(
+        {
+          nextIndex: 1,
+          tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          promoNote,
+        },
+        "tech"
+      );
+
+      queue = {
+        articles: newArticles,
+        meta: {
+          nextIndex: 1,
+          tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          promoNote,
+        },
+      };
     }
 
-    // Step 5 — Summarise with Claude in batches of 25 articles.
-    const { summaries, usage } = await summarizeBatched(newArticles, "tech");
+    // ── Pop and process the next batch ───────────────────────────────────────
+    const { articles, meta } = queue;
+    const { nextIndex, tokens, promoNote } = meta;
 
-    // Step 6 — Persist the newly processed URLs in Redis (72-hour TTL),
-    // and save the article list for deep-dive lookups (both under "tech" namespace).
-    await markSeen(newUrls, "tech");
-    await saveArticles(newArticles, "tech");
+    const batch = articles.slice(0, BATCH_SIZE);
+    const rest = articles.slice(BATCH_SIZE);
+    const isLastBatch = rest.length === 0;
 
-    // Step 7 — Send all batch messages to Telegram (token footer on last).
-    const promoNote =
-      totalExcluded > 0
-        ? `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
-          Object.entries(excludedReasons)
-            .map(([kw, n]) => `${kw} (${n})`)
-            .join(", ")
-        : "";
-    await sendBatchedDigest(summaries, usage, promoNote);
+    console.log(
+      `[digest-tech] Processing articles ${nextIndex}–${nextIndex + batch.length - 1}` +
+        ` (${rest.length} remaining after this batch)…`
+    );
 
-    console.log("[digest-tech] Run complete.");
+    const { summary, usage } = await summarizeArticles(batch, "tech", nextIndex);
 
-    // Step 8 — Return a success response with run metadata.
+    const updatedTokens = {
+      input_tokens: tokens.input_tokens + usage.input_tokens,
+      output_tokens: tokens.output_tokens + usage.output_tokens,
+      total_tokens: tokens.total_tokens + usage.total_tokens,
+    };
+
+    // Persist updated queue state.
+    await setQueue(rest, "tech");
+
+    if (isLastBatch) {
+      // Append token footer (and promo note if any) to the final message.
+      const footer = [
+        promoNote || "",
+        `\n📊 টোকেন: ইনপুট ${updatedTokens.input_tokens} · আউটপুট ${updatedTokens.output_tokens} · মোট ${updatedTokens.total_tokens}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      await sendMessage(summary + (footer ? "\n" + footer : ""));
+      await clearQueueMeta("tech");
+      console.log("[digest-tech] All batches complete.");
+    } else {
+      await sendMessage(summary);
+      await setQueueMeta(
+        { nextIndex: nextIndex + BATCH_SIZE, tokens: updatedTokens, promoNote },
+        "tech"
+      );
+    }
+
     return NextResponse.json({
-      status: "ok",
-      articles_processed: newArticles.length,
-      token_usage: usage,
+      status: isLastBatch ? "complete" : "batching",
+      batch_start: nextIndex,
+      batch_end: nextIndex + batch.length - 1,
+      remaining: rest.length,
+      token_usage: updatedTokens,
     });
   } catch (err) {
     console.error("[digest-tech] Unexpected error:", err);
