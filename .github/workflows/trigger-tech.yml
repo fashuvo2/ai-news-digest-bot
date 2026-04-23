@@ -48,8 +48,8 @@ jobs:
               break
             fi
 
-            if [ "$STATUS" = "parse_error" ] || [ "$STATUS" = "unknown" ]; then
-              echo "ERROR: Could not parse API response."
+            if [ "$STATUS" != "batching" ] && [ "$STATUS" != "initializing" ]; then
+              echo "ERROR: Unexpected status: $STATUS"
               exit 1
             fi
 

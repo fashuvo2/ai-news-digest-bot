@@ -3,24 +3,16 @@
  *
  * Tech news digest endpoint — stateful batch processing.
  *
- * Because Vercel's Free plan limits functions to 60 seconds, this endpoint
- * processes articles in small batches across multiple calls. GitHub Actions
- * loops until the queue is drained.
+ * Because Vercel's Free plan limits functions to 60 seconds, work is split
+ * across multiple calls. GitHub Actions loops until the queue is drained.
  *
- * First call:
- *   1. Validate auth.
- *   2. Fetch RSS feeds, deduplicate, filter promos.
- *   3. Save all articles to Redis for deep-dive lookups (correct 1-based indices).
- *   4. Mark all URLs as seen.
- *   5. Store remaining articles as a queue in Redis.
- *   6. Process the first batch → Telegram.
- *   7. Return { status: "batching" } or { status: "complete" } if ≤ BATCH_SIZE articles.
+ * Call 1 — init only (no Claude):
+ *   Fetch RSS, deduplicate, store queue in Redis, send Telegram status, return
+ *   { status: "initializing" }.
  *
- * Subsequent calls:
- *   1. Validate auth.
- *   2. Pop next batch from Redis queue.
- *   3. Process → Telegram.
- *   4. Return { status: "batching" } or { status: "complete" }.
+ * Calls 2..N — one batch per call:
+ *   Pop BATCH_SIZE articles from Redis, summarize with Claude, send to Telegram,
+ *   return { status: "batching" } or { status: "complete" }.
  */
 
 import { NextResponse } from "next/server";
@@ -58,14 +50,14 @@ export async function POST(request) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
 
-  console.log("[digest-tech] Batch call received…");
+  console.log("[digest-tech] Call received…");
 
   try {
-    let queue = await getQueue("tech");
+    const queue = await getQueue("tech");
 
-    // ── First call: fetch articles and initialise queue ──────────────────────
+    // ── Call 1: fetch articles, build queue, return immediately ─────────────
     if (!queue) {
-      console.log("[digest-tech] No queue found — fetching articles…");
+      console.log("[digest-tech] No queue — fetching articles…");
 
       const recentArticles = await fetchRecentArticles(12, TECH_SOURCES);
       const recentUrls = recentArticles.map((a) => a.link || a.url).filter(Boolean);
@@ -94,15 +86,12 @@ export async function POST(request) {
               .join(", ")
           : "";
 
-      // Save all articles upfront with correct 1-based indices for deep-dive.
-      await saveArticles(newArticles, "tech");
-      // Mark all URLs seen now so re-runs don't reprocess them.
-      await markSeen(newUrls, "tech");
-
       const totalArticles = newArticles.length;
       const totalBatches = Math.ceil(totalArticles / BATCH_SIZE);
 
-      // Store queue state.
+      // Persist everything before returning — subsequent calls read from Redis.
+      await saveArticles(newArticles, "tech");
+      await markSeen(newUrls, "tech");
       await setQueue(newArticles, "tech");
       await setQueueMeta(
         {
@@ -115,25 +104,19 @@ export async function POST(request) {
         "tech"
       );
 
-      // Notify that processing is starting.
       await sendMessage(
         `⏳ ${totalArticles}টি নতুন প্রযুক্তি আর্টিকেল পাওয়া গেছে। ` +
           `${totalBatches}টি ব্যাচে পাঠানো হবে।`
       );
 
-      queue = {
-        articles: newArticles,
-        meta: {
-          nextIndex: 1,
-          totalArticles,
-          totalBatches,
-          tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-          promoNote,
-        },
-      };
+      return NextResponse.json({
+        status: "initializing",
+        total_articles: totalArticles,
+        total_batches: totalBatches,
+      });
     }
 
-    // ── Pop and process the next batch ───────────────────────────────────────
+    // ── Calls 2..N: process one batch ────────────────────────────────────────
     const { articles, meta } = queue;
     const { nextIndex, totalArticles, totalBatches, tokens, promoNote } = meta;
 
@@ -147,7 +130,6 @@ export async function POST(request) {
         ` (${rest.length} remaining after this batch)…`
     );
 
-    // Notify batch is starting.
     await sendMessage(
       `🔄 ব্যাচ ${currentBatch}/${totalBatches} শুরু হচ্ছে ` +
         `(আর্টিকেল ${nextIndex}–${nextIndex + batch.length - 1})...`
@@ -161,11 +143,9 @@ export async function POST(request) {
       total_tokens: tokens.total_tokens + usage.total_tokens,
     };
 
-    // Persist updated queue state.
     await setQueue(rest, "tech");
 
     if (isLastBatch) {
-      // Send digest, then token footer + promo note as a final summary.
       await sendMessage(summary);
       const footer = [
         promoNote || "",
@@ -181,7 +161,13 @@ export async function POST(request) {
       await sendMessage(summary);
       await sendMessage(`✅ ব্যাচ ${currentBatch}/${totalBatches} সম্পন্ন।`);
       await setQueueMeta(
-        { nextIndex: nextIndex + BATCH_SIZE, totalArticles, totalBatches, tokens: updatedTokens, promoNote },
+        {
+          nextIndex: nextIndex + BATCH_SIZE,
+          totalArticles,
+          totalBatches,
+          tokens: updatedTokens,
+          promoNote,
+        },
         "tech"
       );
     }
