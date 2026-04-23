@@ -71,19 +71,15 @@ export async function POST(request) {
   const num = parseInt(text, 10);
   if (!isNaN(num) && String(num) === text && num > 0) {
     try {
-      // Check AI namespace first, then tech namespace.
-      let article = await getArticle(num, "ai");
-      if (!article) article = await getArticle(num, "tech");
+      // AI webhook only looks up articles from the "ai" namespace.
+      const article = await getArticle(num, "ai");
 
       if (!article) {
-        const count = Math.max(
-          await getArticleCount("ai"),
-          await getArticleCount("tech")
-        );
+        const count = await getArticleCount("ai");
         const countMsg =
           count > 0
-            ? `সর্বশেষ ডাইজেস্টে ${count}টি আর্টিকেল ছিল। ১–${count} এর মধ্যে একটি নম্বর পাঠান।`
-            : "সর্বশেষ ডাইজেস্টের আর্টিকেলগুলি আর পাওয়া যাচ্ছে না। পরবর্তী ডাইজেস্টের পর চেষ্টা করুন।";
+            ? `সর্বশেষ AI ডাইজেস্টে ${count}টি আর্টিকেল ছিল। ১–${count} এর মধ্যে একটি নম্বর পাঠান।`
+            : "সর্বশেষ AI ডাইজেস্টের আর্টিকেলগুলি আর পাওয়া যাচ্ছে না। পরবর্তী ডাইজেস্টের পর চেষ্টা করুন।";
 
         await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।\n\n${countMsg}`);
         return NextResponse.json({ ok: true });
