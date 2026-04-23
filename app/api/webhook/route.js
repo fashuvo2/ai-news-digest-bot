@@ -12,7 +12,7 @@
  *   /help          — show available commands
  */
 
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { getArticle, getArticleCount } from "@/lib/storage";
 import { deepDiveArticle } from "@/lib/deepDive";
 import { sendReply } from "@/lib/telegram";
@@ -71,44 +71,33 @@ export async function POST(request) {
   // ── Article number ────────────────────────────────────────────────────────────
   const num = parseInt(text, 10);
   if (!isNaN(num) && String(num) === text && num > 0) {
-    try {
-      // AI webhook only looks up articles from the "ai" namespace.
-      const article = await getArticle(num, "ai");
+    // Return 200 immediately so Telegram won't retry, then process in background.
+    after(async () => {
+      try {
+        const article = await getArticle(num, "ai");
 
-      if (!article) {
-        const count = await getArticleCount("ai");
-        const countMsg =
-          count > 0
-            ? `সর্বশেষ AI ডাইজেস্টে ${count}টি আর্টিকেল ছিল। ১–${count} এর মধ্যে একটি নম্বর পাঠান।`
-            : "সর্বশেষ AI ডাইজেস্টের আর্টিকেলগুলি আর পাওয়া যাচ্ছে না। পরবর্তী ডাইজেস্টের পর চেষ্টা করুন।";
+        if (!article) {
+          const count = await getArticleCount("ai");
+          const countMsg =
+            count > 0
+              ? `সর্বশেষ AI ডাইজেস্টে ${count}টি আর্টিকেল ছিল। ১–${count} এর মধ্যে একটি নম্বর পাঠান।`
+              : "সর্বশেষ AI ডাইজেস্টের আর্টিকেলগুলি আর পাওয়া যাচ্ছে না। পরবর্তী ডাইজেস্টের পর চেষ্টা করুন।";
+          await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।\n\n${countMsg}`);
+          return;
+        }
 
-        await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।\n\n${countMsg}`);
-        return NextResponse.json({ ok: true });
+        await sendReply(chatId, messageId, `⏳ <b>${article.title}</b> — বিশ্লেষণ তৈরি হচ্ছে…`);
+
+        const { analysis, usage } = await deepDiveArticle(article);
+        const footer =
+          "\n——————————————\n" +
+          `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
+        await sendReply(chatId, messageId, analysis + footer);
+      } catch (err) {
+        console.error("[webhook] Deep-dive error:", err);
+        await sendReply(chatId, messageId, "⚠️ দুঃখিত, বিশ্লেষণ তৈরিতে একটি সমস্যা হয়েছে। একটু পরে আবার চেষ্টা করুন।");
       }
-
-      // Acknowledge immediately so the user knows it's working.
-      await sendReply(
-        chatId,
-        messageId,
-        `⏳ <b>${article.title}</b> — বিশ্লেষণ তৈরি হচ্ছে…`
-      );
-
-      const { analysis, usage } = await deepDiveArticle(article);
-
-      const footer =
-        "\n——————————————\n" +
-        `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
-
-      await sendReply(chatId, messageId, analysis + footer);
-    } catch (err) {
-      console.error("[webhook] Deep-dive error:", err);
-      await sendReply(
-        chatId,
-        messageId,
-        "⚠️ দুঃখিত, বিশ্লেষণ তৈরিতে একটি সমস্যা হয়েছে। একটু পরে আবার চেষ্টা করুন।"
-      );
-    }
-
+    });
     return NextResponse.json({ ok: true });
   }
 
@@ -120,25 +109,28 @@ export async function POST(request) {
     commaNums.every((n, i) => !isNaN(n) && String(n) === commaParts[i] && n > 0);
 
   if (isValidList) {
-    await sendReply(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`);
-    for (const num of commaNums) {
-      try {
-        const article = await getArticle(num, "ai");
-        if (!article) {
-          await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`);
-          continue;
+    // Return 200 immediately — multiple deep-dives will far exceed Telegram's timeout.
+    after(async () => {
+      await sendReply(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`);
+      for (const num of commaNums) {
+        try {
+          const article = await getArticle(num, "ai");
+          if (!article) {
+            await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`);
+            continue;
+          }
+          await sendReply(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`);
+          const { analysis, usage } = await deepDiveArticle(article);
+          const footer =
+            "\n——————————————\n" +
+            `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
+          await sendReply(chatId, messageId, analysis + footer);
+        } catch (err) {
+          console.error(`[webhook] Deep-dive error for article ${num}:`, err);
+          await sendReply(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`);
         }
-        await sendReply(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`);
-        const { analysis, usage } = await deepDiveArticle(article);
-        const footer =
-          "\n——————————————\n" +
-          `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
-        await sendReply(chatId, messageId, analysis + footer);
-      } catch (err) {
-        console.error(`[webhook] Deep-dive error for article ${num}:`, err);
-        await sendReply(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`);
       }
-    }
+    });
     return NextResponse.json({ ok: true });
   }
 
