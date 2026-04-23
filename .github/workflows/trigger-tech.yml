@@ -38,14 +38,7 @@ jobs:
               exit 1
             fi
 
-            STATUS=$(python3 -c "
-import json
-try:
-    d = json.load(open('/tmp/response.json'))
-    print(d.get('status', 'unknown'))
-except Exception as e:
-    print('parse_error')
-" 2>/dev/null)
+            STATUS=$(jq -r '.status // "parse_error"' /tmp/response.json 2>/dev/null || echo "parse_error")
 
             echo "Batch status: $STATUS"
 
