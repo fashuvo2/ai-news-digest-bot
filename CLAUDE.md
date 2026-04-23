@@ -25,6 +25,16 @@ curl -X POST http://localhost:3000/api/digest-tech \
 
 # Debug feed status (shows per-feed fetch results, no Telegram send)
 curl -H "Authorization: Bearer <CRON_SECRET>" http://localhost:3000/api/debug
+
+# Reset seen-URL deduplication cache (both namespaces)
+curl -X POST http://localhost:3000/api/reset \
+  -H "Authorization: Bearer $(grep CRON_SECRET .env.local | cut -d= -f2)"
+
+# Reset a single namespace only (ai or tech)
+curl -X POST http://localhost:3000/api/reset \
+  -H "Authorization: Bearer $(grep CRON_SECRET .env.local | cut -d= -f2)" \
+  -H "Content-Type: application/json" \
+  -d '{"ns":"ai"}'
 ```
 
 **Local setup:** Copy `.env.example` to `.env.local` and fill in values. `KV_REST_API_URL` and `KV_REST_API_TOKEN` must be copied manually from the Vercel dashboard (Storage → KV → `.env.local` tab).
@@ -38,11 +48,12 @@ This is a Next.js 15 App Router application deployed on Vercel. It has **two ind
 ```
 GitHub Actions (manual trigger)
   → POST /api/digest  OR  /api/digest-tech
-    → lib/fetchFeeds.js  (fetch RSS/Atom feeds in parallel)
+    → lib/fetchFeeds.js  fetchRecentArticles()  (fetch RSS/Atom feeds in parallel)
+    → lib/fetchFeeds.js  filterPromoArticles()  (drop promo/deal articles by keyword)
     → lib/storage.js filterUnseen()  (deduplicate via Upstash Redis)
-    → lib/summarize.js  (Claude API → Bengali digest)
+    → lib/summarize.js  summarizeBatched()  (Claude API → Bengali digest, 25 articles/batch)
     → lib/storage.js markSeen() + saveArticles()
-    → lib/telegram.js sendDigest()  (post to Telegram chat)
+    → lib/telegram.js sendBatchedDigest()  (post to Telegram chat)
 ```
 
 ### Deep-dive flow (on-demand, user-initiated)
@@ -70,16 +81,23 @@ User sends article number to Telegram bot
 | `app/api/digest-tech/route.js` | Tech digest endpoint (POST, 12h window) |
 | `app/api/webhook/route.js` | Telegram webhook: handles article number → deep dive |
 | `app/api/debug/route.js` | Feed diagnostics (GET, no Telegram send) |
+| `app/api/reset/route.js` | Clear seen-URL deduplication cache (POST, optional `{"ns":"ai"\|"tech"}`) |
 
 ### Redis key schema
 
 - `digest:seen:{ns}:{url}` — deduplication flag, 72h TTL (`ns` = "ai" or "tech")
 - `digest:last_articles:{ns}` — JSON array of last digest's articles, 13h TTL
+- `digest:queue:{ns}` — remaining articles for in-progress batched run, 4h TTL
+- `digest:queue_meta:{ns}` — batch run state (nextIndex, cumulative tokens, promoNote), 4h TTL
 
 ### Authentication
 
-- `/api/digest`, `/api/digest-tech`, `/api/debug`: `Authorization: Bearer <CRON_SECRET>` header
-- `/api/webhook`: `x-telegram-bot-api-secret-token: <TELEGRAM_WEBHOOK_SECRET>` (optional; open if unset)
+- `/api/digest`, `/api/digest-tech`, `/api/debug`, `/api/reset`: `Authorization: Bearer <CRON_SECRET>` header
+- `/api/webhook`: `x-telegram-bot-api-secret-token: <TELEGRAM_WEBHOOK_SECRET>` (optional; open if unset — set in production via Vercel env vars)
+
+### Module system
+
+`lib/` files use **CommonJS** (`require` / `module.exports`). `app/` files use **ES modules** (`import` / `export`). Keep this consistent when adding new files.
 
 ### Claude model
 
