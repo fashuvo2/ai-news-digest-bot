@@ -60,7 +60,8 @@ export async function POST(request) {
       "🤖 <b>AI সংবাদ ডাইজেস্ট বট</b>\n\n" +
       "কোনো আর্টিকেল সম্পর্কে বিস্তারিত জানতে চাইলে সেটির নম্বর পাঠান।\n\n" +
       "<b>উদাহরণ:</b>\n" +
-      "• <code>3</code> — ৩ নম্বর আর্টিকেলের বিস্তারিত বিশ্লেষণ পান\n\n" +
+      "• <code>3</code> — ৩ নম্বর আর্টিকেলের বিস্তারিত বিশ্লেষণ পান\n" +
+      "• <code>1,3,5</code> — একসাথে একাধিক আর্টিকেলের বিশ্লেষণ পান\n\n" +
       "ডাইজেস্ট আসার পর ১৩ ঘণ্টার মধ্যে যেকোনো আর্টিকেলের নম্বর পাঠাতে পারবেন।";
 
     await sendReply(chatId, messageId, helpText);
@@ -111,11 +112,41 @@ export async function POST(request) {
     return NextResponse.json({ ok: true });
   }
 
+  // ── Comma-separated list (e.g. "1,3,5") ──────────────────────────────────────
+  const commaParts = text.split(",").map((s) => s.trim());
+  const commaNums = commaParts.map((s) => parseInt(s, 10));
+  const isValidList =
+    commaParts.length > 1 &&
+    commaNums.every((n, i) => !isNaN(n) && String(n) === commaParts[i] && n > 0);
+
+  if (isValidList) {
+    await sendReply(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`);
+    for (const num of commaNums) {
+      try {
+        const article = await getArticle(num, "ai");
+        if (!article) {
+          await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`);
+          continue;
+        }
+        await sendReply(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`);
+        const { analysis, usage } = await deepDiveArticle(article);
+        const footer =
+          "\n——————————————\n" +
+          `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
+        await sendReply(chatId, messageId, analysis + footer);
+      } catch (err) {
+        console.error(`[webhook] Deep-dive error for article ${num}:`, err);
+        await sendReply(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`);
+      }
+    }
+    return NextResponse.json({ ok: true });
+  }
+
   // ── Unknown input ─────────────────────────────────────────────────────────────
   await sendReply(
     chatId,
     messageId,
-    "কোনো আর্টিকেলের বিস্তারিত জানতে তার নম্বর পাঠান (যেমন: <code>3</code>)।\n/help — সাহায্য"
+    "কোনো আর্টিকেলের বিস্তারিত জানতে তার নম্বর পাঠান (যেমন: <code>3</code>)।\nএকসাথে একাধিকের জন্য: <code>1,3,5</code>\n/help — সাহায্য"
   );
 
   return NextResponse.json({ ok: true });

@@ -20,7 +20,7 @@ import { fetchRecentArticles, filterPromoArticles } from "@/lib/fetchFeeds";
 import { summarizeArticles } from "@/lib/summarize";
 import { sendMessage } from "@/lib/telegram";
 import {
-  filterUnseen, markSeen, saveArticles,
+  filterUnseen, markSeen, saveArticles, getAllArticles,
   getQueue, setQueue, setQueueMeta, clearQueueMeta,
 } from "@/lib/storage";
 import TECH_SOURCES from "@/lib/sources-tech";
@@ -72,7 +72,7 @@ export async function POST(request) {
       const unseenArticles = recentArticles.filter((a) =>
         newUrls.includes(a.link || a.url)
       );
-      const { kept: newArticles, totalExcluded, excludedReasons } =
+      const { kept: newArticles, totalExcluded, excludedReasons, excludedTitles } =
         filterPromoArticles(unseenArticles);
 
       console.log(
@@ -81,7 +81,13 @@ export async function POST(request) {
       );
 
       if (newArticles.length === 0) {
-        await sendMessage("কোনো নতুন প্রযুক্তি খবর নেই।");
+        const prevArticles = await getAllArticles("tech");
+        let noNewsMsg = "কোনো নতুন প্রযুক্তি খবর নেই।";
+        if (prevArticles.length > 0) {
+          const titleList = prevArticles.map((a) => `${a.index}. ${a.title}`).join("\n");
+          noNewsMsg += `\n\nআগের রানের আর্টিকেলগুলো:\n${titleList}`;
+        }
+        await sendMessage(noNewsMsg);
         return NextResponse.json({ status: "no_new_articles" });
       }
 
@@ -90,7 +96,9 @@ export async function POST(request) {
           ? `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
             Object.entries(excludedReasons)
               .map(([kw, n]) => `${kw} (${n})`)
-              .join(", ")
+              .join(", ") +
+            "\n" +
+            excludedTitles.map((t, i) => `  ${i + 1}. ${t}`).join("\n")
           : "";
 
       const totalArticles = newArticles.length;

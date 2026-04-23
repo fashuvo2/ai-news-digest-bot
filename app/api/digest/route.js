@@ -18,7 +18,7 @@ import { NextResponse } from "next/server";
 import { fetchRecentArticles, filterPromoArticles } from "@/lib/fetchFeeds";
 import { summarizeBatched } from "@/lib/summarize";
 import { sendBatchedDigest, sendMessage } from "@/lib/telegram";
-import { filterUnseen, markSeen, saveArticles } from "@/lib/storage";
+import { filterUnseen, markSeen, saveArticles, getAllArticles } from "@/lib/storage";
 
 // ── Security guard ─────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ export async function POST(request) {
     );
 
     // Filter out promotional articles.
-    const { kept: newArticles, totalExcluded, excludedReasons } = filterPromoArticles(unseenArticles);
+    const { kept: newArticles, totalExcluded, excludedReasons, excludedTitles } = filterPromoArticles(unseenArticles);
 
     console.log(
       `[digest] ${recentArticles.length} recent articles fetched; ` +
@@ -78,10 +78,16 @@ export async function POST(request) {
 
     // Step 4 — Nothing new? Send a short "no news" notification and exit.
     if (newArticles.length === 0) {
-      await sendMessage("কোনো নতুন খবর নেই।");
+      const prevArticles = await getAllArticles("ai");
+      let noNewsMsg = "কোনো নতুন AI খবর নেই।";
+      if (prevArticles.length > 0) {
+        const titleList = prevArticles.map((a) => `${a.index}. ${a.title}`).join("\n");
+        noNewsMsg += `\n\nআগের রানের আর্টিকেলগুলো:\n${titleList}`;
+      }
+      await sendMessage(noNewsMsg);
       return NextResponse.json({
         status: "no_new_articles",
-        message: "No new articles found in the last 12 hours.",
+        message: "No new articles found in the last 24 hours.",
       });
     }
 
@@ -99,7 +105,9 @@ export async function POST(request) {
         ? `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
           Object.entries(excludedReasons)
             .map(([kw, n]) => `${kw} (${n})`)
-            .join(", ")
+            .join(", ") +
+          "\n" +
+          excludedTitles.map((t, i) => `  ${i + 1}. ${t}`).join("\n")
         : "";
     await sendBatchedDigest(summaries, usage, promoNote);
 
