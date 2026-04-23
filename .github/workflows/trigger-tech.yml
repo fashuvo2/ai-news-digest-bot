@@ -1,63 +1,31 @@
 name: Tech News Digest – Manual Trigger
 
 on:
-  # ── Manual trigger ──────────────────────────────────────────────────────────
-  # Run from the GitHub Actions UI at any time.
   workflow_dispatch:
 
 jobs:
-  trigger-digest-tech:
-    name: Trigger tech digest API
+  digest-tech:
+    name: Run tech digest
     runs-on: ubuntu-latest
 
     steps:
-      - name: Process tech digest in batches
-        run: |
-          MAX_BATCHES=30
-          COMPLETED=false
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          for i in $(seq 1 $MAX_BATCHES); do
-            echo "--- Batch $i ---"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-            HTTP_STATUS=$(curl \
-              --silent \
-              --output /tmp/response.json \
-              --write-out "%{http_code}" \
-              --max-time 90 \
-              --request POST \
-              --header "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-              --header "Content-Type: application/json" \
-              "https://${{ secrets.VERCEL_APP_URL }}/api/digest-tech")
+      - name: Install dependencies
+        run: npm ci
 
-            echo "HTTP status: $HTTP_STATUS"
-            echo "Response body:"
-            cat /tmp/response.json
-
-            if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-              echo "ERROR: API returned HTTP $HTTP_STATUS"
-              exit 1
-            fi
-
-            STATUS=$(jq -r '.status // "parse_error"' /tmp/response.json 2>/dev/null || echo "parse_error")
-
-            echo "Batch status: $STATUS"
-
-            if [ "$STATUS" = "complete" ] || [ "$STATUS" = "no_new_articles" ]; then
-              echo "Digest complete after $i batch(es)."
-              COMPLETED=true
-              break
-            fi
-
-            if [ "$STATUS" != "batching" ] && [ "$STATUS" != "initializing" ]; then
-              echo "ERROR: Unexpected status: $STATUS"
-              exit 1
-            fi
-
-            # Brief pause between batches.
-            sleep 5
-          done
-
-          if [ "$COMPLETED" != "true" ]; then
-            echo "ERROR: Digest did not complete after $MAX_BATCHES batches."
-            exit 1
-          fi
+      - name: Run tech digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
+          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/digest-tech.js
