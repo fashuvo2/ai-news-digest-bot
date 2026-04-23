@@ -13,7 +13,7 @@
  */
 
 import { NextResponse, after } from "next/server";
-import { getArticle, getArticleCount } from "@/lib/storage";
+import { getArticle, getArticleCount, markUpdateSeen } from "@/lib/storage";
 import { deepDiveArticle } from "@/lib/deepDive";
 import { sendReply } from "@/lib/telegram";
 
@@ -42,6 +42,12 @@ export async function POST(request) {
     update = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  // Deduplicate: Telegram retries failed webhooks; process each update_id only once.
+  const isNew = await markUpdateSeen(update.update_id);
+  if (!isNew) {
+    return NextResponse.json({ ok: true }); // already processed — ignore retry
   }
 
   // We only handle regular text messages.
