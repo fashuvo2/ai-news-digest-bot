@@ -21,6 +21,12 @@ import { sendBatchedDigest, sendMessage } from "@/lib/telegram";
 import { filterUnseen, markSeen, saveArticles } from "@/lib/storage";
 import TECH_SOURCES from "@/lib/sources-tech";
 
+// Allow up to 300 seconds — tech feeds can be high-volume.
+export const maxDuration = 300;
+
+// Cap articles sent to Claude to stay within the time budget (3 batches of 25).
+const MAX_ARTICLES = 75;
+
 // ── Security guard ─────────────────────────────────────────────────────────────
 
 function isAuthorised(request) {
@@ -61,11 +67,16 @@ export async function POST(request) {
     );
 
     // Filter out promotional articles.
-    const { kept: newArticles, totalExcluded, excludedReasons } = filterPromoArticles(unseenArticles);
+    const { kept: keptArticles, totalExcluded, excludedReasons } = filterPromoArticles(unseenArticles);
+
+    // Cap to the most recent MAX_ARTICLES to stay within the time budget.
+    const newArticles = keptArticles.slice(0, MAX_ARTICLES);
+    const capped = keptArticles.length - newArticles.length;
 
     console.log(
       `[digest-tech] ${recentArticles.length} recent articles fetched; ` +
-        `${unseenArticles.length} are new; ${totalExcluded} excluded as promo`
+        `${unseenArticles.length} are new; ${totalExcluded} excluded as promo` +
+        (capped > 0 ? `; ${capped} capped` : "")
     );
 
     // Step 4 — Nothing new? Send a short "no news" notification and exit.
