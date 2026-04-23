@@ -53,7 +53,7 @@ export async function POST(request) {
 
   try {
     // Step 2 — Fetch recent articles (last 24 hours) from all RSS sources.
-    const recentArticles = await fetchRecentArticles(24);
+    const { articles: recentArticles } = await fetchRecentArticles(24);
 
     // Extract unique URLs for the deduplication check.
     const recentUrls = recentArticles

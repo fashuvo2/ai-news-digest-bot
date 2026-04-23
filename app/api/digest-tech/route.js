@@ -59,7 +59,14 @@ export async function POST(request) {
     if (!queue) {
       console.log("[digest-tech] No queue — fetching articles…");
 
-      const recentArticles = await fetchRecentArticles(12, TECH_SOURCES);
+      const { articles: recentArticles, skippedFeeds } = await fetchRecentArticles(12, TECH_SOURCES);
+
+      if (skippedFeeds.length > 0) {
+        await sendMessage(
+          `⚠️ ${skippedFeeds.length}টি ফিড লোড হয়নি (টাইমআউট বা এরর): ${skippedFeeds.join(", ")}`
+        );
+      }
+
       const recentUrls = recentArticles.map((a) => a.link || a.url).filter(Boolean);
       const newUrls = await filterUnseen(recentUrls, "tech");
       const unseenArticles = recentArticles.filter((a) =>
