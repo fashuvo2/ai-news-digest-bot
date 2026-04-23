@@ -99,21 +99,34 @@ export async function POST(request) {
       // Mark all URLs seen now so re-runs don't reprocess them.
       await markSeen(newUrls, "tech");
 
+      const totalArticles = newArticles.length;
+      const totalBatches = Math.ceil(totalArticles / BATCH_SIZE);
+
       // Store queue state.
       await setQueue(newArticles, "tech");
       await setQueueMeta(
         {
           nextIndex: 1,
+          totalArticles,
+          totalBatches,
           tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
           promoNote,
         },
         "tech"
       );
 
+      // Notify that processing is starting.
+      await sendMessage(
+        `⏳ ${totalArticles}টি নতুন প্রযুক্তি আর্টিকেল পাওয়া গেছে। ` +
+          `${totalBatches}টি ব্যাচে পাঠানো হবে।`
+      );
+
       queue = {
         articles: newArticles,
         meta: {
           nextIndex: 1,
+          totalArticles,
+          totalBatches,
           tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
           promoNote,
         },
@@ -122,15 +135,22 @@ export async function POST(request) {
 
     // ── Pop and process the next batch ───────────────────────────────────────
     const { articles, meta } = queue;
-    const { nextIndex, tokens, promoNote } = meta;
+    const { nextIndex, totalArticles, totalBatches, tokens, promoNote } = meta;
 
     const batch = articles.slice(0, BATCH_SIZE);
     const rest = articles.slice(BATCH_SIZE);
     const isLastBatch = rest.length === 0;
+    const currentBatch = Math.floor((nextIndex - 1) / BATCH_SIZE) + 1;
 
     console.log(
       `[digest-tech] Processing articles ${nextIndex}–${nextIndex + batch.length - 1}` +
         ` (${rest.length} remaining after this batch)…`
+    );
+
+    // Notify batch is starting.
+    await sendMessage(
+      `🔄 ব্যাচ ${currentBatch}/${totalBatches} শুরু হচ্ছে ` +
+        `(আর্টিকেল ${nextIndex}–${nextIndex + batch.length - 1})...`
     );
 
     const { summary, usage } = await summarizeArticles(batch, "tech", nextIndex);
@@ -145,20 +165,23 @@ export async function POST(request) {
     await setQueue(rest, "tech");
 
     if (isLastBatch) {
-      // Append token footer (and promo note if any) to the final message.
+      // Send digest, then token footer + promo note as a final summary.
+      await sendMessage(summary);
       const footer = [
         promoNote || "",
-        `\n📊 টোকেন: ইনপুট ${updatedTokens.input_tokens} · আউটপুট ${updatedTokens.output_tokens} · মোট ${updatedTokens.total_tokens}`,
+        `📊 টোকেন: ইনপুট ${updatedTokens.input_tokens} · আউটপুট ${updatedTokens.output_tokens} · মোট ${updatedTokens.total_tokens}`,
+        `✅ সব ${totalBatches}টি ব্যাচ সম্পন্ন।`,
       ]
         .filter(Boolean)
         .join("\n");
-      await sendMessage(summary + (footer ? "\n" + footer : ""));
+      await sendMessage(footer);
       await clearQueueMeta("tech");
       console.log("[digest-tech] All batches complete.");
     } else {
       await sendMessage(summary);
+      await sendMessage(`✅ ব্যাচ ${currentBatch}/${totalBatches} সম্পন্ন।`);
       await setQueueMeta(
-        { nextIndex: nextIndex + BATCH_SIZE, tokens: updatedTokens, promoNote },
+        { nextIndex: nextIndex + BATCH_SIZE, totalArticles, totalBatches, tokens: updatedTokens, promoNote },
         "tech"
       );
     }
