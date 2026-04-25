@@ -9,12 +9,18 @@
  *   { "url": "https://<your-app>.vercel.app/api/webhook-tech" }
  *
  * Commands:
- *   <number>  — deep dive into article N from the last Tech digest
- *   /help     — show available commands
+ *   <number>       — deep dive into article N from the last Tech digest
+ *   /help          — show available commands
+ *   /stop          — activate kill switch (admin only)
+ *   /resume        — clear kill switch (admin only)
+ *   /status        — show kill switch state (admin only)
+ *   /reset         — clear both seen-URL caches (admin only)
+ *   /reset ai      — clear AI seen-URL cache (admin only)
+ *   /reset tech    — clear Tech seen-URL cache (admin only)
  */
 
 import { NextResponse, after } from "next/server";
-import { getArticle, getArticleCount, markUpdateSeen } from "@/lib/storage";
+import { getArticle, getArticleCount, markUpdateSeen, getKillSwitch, setKillSwitch, clearKillSwitch, clearQueue, resetSeen } from "@/lib/storage";
 import { deepDiveArticle } from "@/lib/deepDive";
 import { sendReplyAs } from "@/lib/telegram";
 
@@ -28,6 +34,16 @@ function isAuthorised(request) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET_TECH;
   if (!secret) return true;
   return request.headers.get("x-telegram-bot-api-secret-token") === secret;
+}
+
+/**
+ * Returns true if chatId is allowed to use admin commands (/stop, /resume, /status, /reset).
+ * If ADMIN_CHAT_ID is not set, all chats are allowed (safe for personal bots).
+ */
+function isAdmin(chatId) {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (!adminId) return true;
+  return String(chatId) === String(adminId);
 }
 
 export async function POST(request) {
@@ -58,6 +74,63 @@ export async function POST(request) {
   const text = message.text.trim();
   const token = getBotToken();
 
+  // ── Reset commands ───────────────────────────────────────────────────────────
+  if (text === "/reset" || text === "/reset ai" || text === "/reset tech") {
+    if (!isAdmin(chatId)) {
+      return NextResponse.json({ ok: true });
+    }
+
+    try {
+      if (text === "/reset ai") {
+        const count = await resetSeen("ai");
+        await sendReplyAs(chatId, messageId, `🗑️ AI memory cleared — ${count} URLs removed.`, token);
+      } else if (text === "/reset tech") {
+        const count = await resetSeen("tech");
+        await sendReplyAs(chatId, messageId, `🗑️ Tech memory cleared — ${count} URLs removed.`, token);
+      } else {
+        const [aiCount, techCount] = await Promise.all([resetSeen("ai"), resetSeen("tech")]);
+        await sendReplyAs(chatId, messageId, `🗑️ Memory cleared — AI: ${aiCount} URLs, Tech: ${techCount} URLs removed.`, token);
+      }
+    } catch (err) {
+      console.error("[webhook-tech] Reset command error:", err);
+      await sendReplyAs(chatId, messageId, "⚠️ কমান্ড প্রক্রিয়া করতে সমস্যা হয়েছে। একটু পরে আবার চেষ্টা করুন।", token).catch(() => {});
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  // ── Kill switch commands ─────────────────────────────────────────────────────
+  if (text === "/stop" || text === "/resume" || text === "/status") {
+    if (!isAdmin(chatId)) {
+      return NextResponse.json({ ok: true }); // silently ignore non-admin
+    }
+
+    try {
+      if (text === "/stop") {
+        await setKillSwitch();
+        await clearQueue("tech");
+        await clearQueue("ai");
+        await sendReplyAs(chatId, messageId, "🛑 Kill switch activated. All pipelines stopped.", token);
+      } else if (text === "/resume") {
+        await clearKillSwitch();
+        await sendReplyAs(chatId, messageId, "✅ Kill switch cleared. Pipelines resumed.", token);
+      } else {
+        const active = await getKillSwitch();
+        await sendReplyAs(
+          chatId,
+          messageId,
+          active
+            ? "🔴 Kill switch is <b>active</b>. Pipelines are stopped."
+            : "🟢 Kill switch is <b>inactive</b>. Pipelines are running normally.",
+          token
+        );
+      }
+    } catch (err) {
+      console.error("[webhook-tech] Kill switch command error:", err);
+      await sendReplyAs(chatId, messageId, "⚠️ কমান্ড প্রক্রিয়া করতে সমস্যা হয়েছে। একটু পরে আবার চেষ্টা করুন।", token).catch(() => {});
+    }
+    return NextResponse.json({ ok: true });
+  }
+
   // ── /help command ────────────────────────────────────────────────────────────
   if (text === "/help" || text === "/start") {
     const helpText =
@@ -66,7 +139,14 @@ export async function POST(request) {
       "<b>উদাহরণ:</b>\n" +
       "• <code>3</code> — ৩ নম্বর আর্টিকেলের বিস্তারিত বিশ্লেষণ পান\n" +
       "• <code>1,3,5</code> — একসাথে একাধিক আর্টিকেলের বিশ্লেষণ পান\n\n" +
-      "ডাইজেস্ট আসার পর ১৩ ঘণ্টার মধ্যে যেকোনো আর্টিকেলের নম্বর পাঠাতে পারবেন।";
+      "ডাইজেস্ট আসার পর ১৩ ঘণ্টার মধ্যে যেকোনো আর্টিকেলের নম্বর পাঠাতে পারবেন।\n\n" +
+      "<b>অ্যাডমিন কমান্ড:</b>\n" +
+      "• <code>/stop</code> — সব পাইপলাইন বন্ধ করুন\n" +
+      "• <code>/resume</code> — পাইপলাইন আবার চালু করুন\n" +
+      "• <code>/status</code> — কিল সুইচের বর্তমান অবস্থা দেখুন\n" +
+      "• <code>/reset</code> — উভয় মেমোরি মুছুন\n" +
+      "• <code>/reset ai</code> — শুধু AI মেমোরি মুছুন\n" +
+      "• <code>/reset tech</code> — শুধু Tech মেমোরি মুছুন";
 
     await sendReplyAs(chatId, messageId, helpText, token);
     return NextResponse.json({ ok: true });
@@ -78,6 +158,12 @@ export async function POST(request) {
     // Return 200 immediately so Telegram won't retry, then process in background.
     after(async () => {
       try {
+        const killed = await getKillSwitch();
+        if (killed) {
+          await sendReplyAs(chatId, messageId, "⏸️ Deep-dives are currently paused.", token);
+          return;
+        }
+
         const article = await getArticle(num, "tech");
 
         if (!article) {
@@ -115,24 +201,40 @@ export async function POST(request) {
   if (isValidList) {
     // Return 200 immediately — multiple deep-dives will far exceed Telegram's timeout.
     after(async () => {
-      await sendReplyAs(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`, token);
-      for (const num of commaNums) {
-        try {
-          const article = await getArticle(num, "tech");
-          if (!article) {
-            await sendReplyAs(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`, token);
-            continue;
-          }
-          await sendReplyAs(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`, token);
-          const { analysis, usage } = await deepDiveArticle(article);
-          const footer =
-            "\n——————————————\n" +
-            `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
-          await sendReplyAs(chatId, messageId, analysis + footer, token);
-        } catch (err) {
-          console.error(`[webhook-tech] Deep-dive error for article ${num}:`, err);
-          await sendReplyAs(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`, token);
+      try {
+        const killed = await getKillSwitch();
+        if (killed) {
+          await sendReplyAs(chatId, messageId, "⏸️ Deep-dives are currently paused.", token);
+          return;
         }
+
+        await sendReplyAs(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`, token);
+        for (const num of commaNums) {
+          try {
+            const killed = await getKillSwitch();
+            if (killed) {
+              await sendReplyAs(chatId, messageId, "⏸️ Deep-dives are currently paused.", token);
+              return;
+            }
+
+            const article = await getArticle(num, "tech");
+            if (!article) {
+              await sendReplyAs(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`, token);
+              continue;
+            }
+            await sendReplyAs(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`, token);
+            const { analysis, usage } = await deepDiveArticle(article);
+            const footer =
+              "\n——————————————\n" +
+              `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
+            await sendReplyAs(chatId, messageId, analysis + footer, token);
+          } catch (err) {
+            console.error(`[webhook-tech] Deep-dive error for article ${num}:`, err);
+            await sendReplyAs(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`, token);
+          }
+        }
+      } catch (err) {
+        console.error("[webhook-tech] Comma-list deep-dive error:", err);
       }
     });
     return NextResponse.json({ ok: true });
