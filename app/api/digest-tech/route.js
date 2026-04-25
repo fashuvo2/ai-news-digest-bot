@@ -22,6 +22,7 @@ import { sendMessage } from "@/lib/telegram";
 import {
   filterUnseen, markSeen, saveArticles, getAllArticles,
   getQueue, setQueue, setQueueMeta, clearQueueMeta,
+  getKillSwitch,
 } from "@/lib/storage";
 import TECH_SOURCES from "@/lib/sources-tech";
 
@@ -48,6 +49,16 @@ function isAuthorised(request) {
 export async function POST(request) {
   if (!isAuthorised(request)) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  }
+
+  // Kill switch check — runs on every call (init + every batch).
+  const killed = await getKillSwitch();
+  if (killed) {
+    console.log("[digest-tech] Kill switch is active — aborting.");
+    return NextResponse.json(
+      { status: "stopped", reason: "kill switch active" },
+      { status: 503 }
+    );
   }
 
   console.log("[digest-tech] Call received…");
