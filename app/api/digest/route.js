@@ -53,6 +53,7 @@ export async function POST(request) {
   const killed = await getKillSwitch();
   if (killed) {
     console.log("[digest] Kill switch is active — aborting run.");
+    await sendMessage("🛑 AI ডাইজেস্ট বাদ দেওয়া হয়েছে — কিল সুইচ সক্রিয় আছে।");
     return NextResponse.json(
       { status: "stopped", reason: "kill switch active" },
       { status: 503 }

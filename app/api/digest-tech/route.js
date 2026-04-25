@@ -52,9 +52,14 @@ export async function POST(request) {
   }
 
   // Kill switch check — runs on every call (init + every batch).
+  // Only notify Telegram on the init call (no queue) to avoid duplicate messages.
   const killed = await getKillSwitch();
   if (killed) {
     console.log("[digest-tech] Kill switch is active — aborting.");
+    const existingQueue = await getQueue("tech");
+    if (!existingQueue) {
+      await sendMessage("🛑 Tech ডাইজেস্ট বাদ দেওয়া হয়েছে — কিল সুইচ সক্রিয় আছে।");
+    }
     return NextResponse.json(
       { status: "stopped", reason: "kill switch active" },
       { status: 503 }
