@@ -96,18 +96,6 @@ export async function POST(request) {
           `${unseenArticles.length} new; ${totalExcluded} promo excluded`
       );
 
-      // Send skipped articles list immediately as a plain message.
-      if (totalExcluded > 0) {
-        const skippedMsg =
-          `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
-          Object.entries(excludedReasons)
-            .map(([kw, n]) => `${kw} (${n})`)
-            .join(", ") +
-          "\n\n" +
-          excludedTitles.map((t, i) => `${i + 1}. ${t}`).join("\n");
-        await sendMessage(skippedMsg);
-      }
-
       if (newArticles.length === 0) {
         const prevArticles = await getAllArticles("tech");
         let noNewsMsg = "কোনো নতুন প্রযুক্তি খবর নেই।";
@@ -126,12 +114,23 @@ export async function POST(request) {
       await saveArticles(newArticles, "tech");
       await markSeen(newUrls, "tech");
       await setQueue(newArticles, "tech");
+      const skippedMsg =
+        totalExcluded > 0
+          ? `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
+            Object.entries(excludedReasons)
+              .map(([kw, n]) => `${kw} (${n})`)
+              .join(", ") +
+            "\n\n" +
+            excludedTitles.map((t, i) => `${i + 1}. ${t}`).join("\n")
+          : "";
+
       await setQueueMeta(
         {
           nextIndex: 1,
           totalArticles,
           totalBatches,
           tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          skippedMsg,
         },
         "tech"
       );
@@ -150,7 +149,7 @@ export async function POST(request) {
 
     // ── Calls 2..N: process one batch ────────────────────────────────────────
     const { articles, meta } = queue;
-    const { nextIndex, totalArticles, totalBatches, tokens } = meta;
+    const { nextIndex, totalArticles, totalBatches, tokens, skippedMsg } = meta;
 
     const batch = articles.slice(0, BATCH_SIZE);
     const rest = articles.slice(BATCH_SIZE);
@@ -184,6 +183,7 @@ export async function POST(request) {
         `✅ সব ${totalBatches}টি ব্যাচ সম্পন্ন।`,
       ].join("\n");
       await sendMessage(footer);
+      if (skippedMsg) await sendMessage(skippedMsg);
       await clearQueueMeta("tech");
       console.log("[digest-tech] All batches complete.");
     } else {
@@ -195,6 +195,7 @@ export async function POST(request) {
           totalArticles,
           totalBatches,
           tokens: updatedTokens,
+          skippedMsg,
         },
         "tech"
       );

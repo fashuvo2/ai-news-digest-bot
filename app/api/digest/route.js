@@ -102,18 +102,6 @@ export async function POST(request) {
       });
     }
 
-    // Send skipped articles list immediately as a plain message (before digest).
-    if (totalExcluded > 0) {
-      const skippedMsg =
-        `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
-        Object.entries(excludedReasons)
-          .map(([kw, n]) => `${kw} (${n})`)
-          .join(", ") +
-        "\n\n" +
-        excludedTitles.map((t, i) => `${i + 1}. ${t}`).join("\n");
-      await sendMessage(skippedMsg);
-    }
-
     // Step 5 — Summarise with Claude in batches of 25 articles.
     const { summaries, usage } = await summarizeBatched(newArticles, "ai");
 
@@ -124,6 +112,18 @@ export async function POST(request) {
 
     // Step 7 — Send all batch messages to Telegram (token footer on last).
     await sendBatchedDigest(summaries, usage);
+
+    // Send skipped articles list after the digest.
+    if (totalExcluded > 0) {
+      const skippedMsg =
+        `🚫 ${totalExcluded}টি প্রমো আর্টিকেল বাদ দেওয়া হয়েছে — ` +
+        Object.entries(excludedReasons)
+          .map(([kw, n]) => `${kw} (${n})`)
+          .join(", ") +
+        "\n\n" +
+        excludedTitles.map((t, i) => `${i + 1}. ${t}`).join("\n");
+      await sendMessage(skippedMsg);
+    }
 
     console.log("[digest] Run complete.");
 
