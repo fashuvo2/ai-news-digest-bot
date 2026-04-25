@@ -13,7 +13,7 @@
  */
 
 import { NextResponse, after } from "next/server";
-import { getArticle, getArticleCount, markUpdateSeen, getKillSwitch, setKillSwitch, clearKillSwitch, clearQueue } from "@/lib/storage";
+import { getArticle, getArticleCount, markUpdateSeen, getKillSwitch, setKillSwitch, clearKillSwitch, clearQueue, resetSeen } from "@/lib/storage";
 import { deepDiveArticle } from "@/lib/deepDive";
 import { sendReply } from "@/lib/telegram";
 
@@ -70,6 +70,30 @@ export async function POST(request) {
   const messageId = message.message_id;
   const text = message.text.trim();
 
+  // ── Reset commands ───────────────────────────────────────────────────────────
+  if (text === "/reset" || text === "/reset ai" || text === "/reset tech") {
+    if (!isAdmin(chatId)) {
+      return NextResponse.json({ ok: true });
+    }
+
+    try {
+      if (text === "/reset ai") {
+        const count = await resetSeen("ai");
+        await sendReply(chatId, messageId, `🗑️ AI memory cleared — ${count} URLs removed.`);
+      } else if (text === "/reset tech") {
+        const count = await resetSeen("tech");
+        await sendReply(chatId, messageId, `🗑️ Tech memory cleared — ${count} URLs removed.`);
+      } else {
+        const [aiCount, techCount] = await Promise.all([resetSeen("ai"), resetSeen("tech")]);
+        await sendReply(chatId, messageId, `🗑️ Memory cleared — AI: ${aiCount} URLs, Tech: ${techCount} URLs removed.`);
+      }
+    } catch (err) {
+      console.error("[webhook] Reset command error:", err);
+      await sendReply(chatId, messageId, "⚠️ কমান্ড প্রক্রিয়া করতে সমস্যা হয়েছে। একটু পরে আবার চেষ্টা করুন।").catch(() => {});
+    }
+    return NextResponse.json({ ok: true });
+  }
+
   // ── Kill switch commands ─────────────────────────────────────────────────────
   if (text === "/stop" || text === "/resume" || text === "/status") {
     if (!isAdmin(chatId)) {
@@ -114,7 +138,10 @@ export async function POST(request) {
       "<b>অ্যাডমিন কমান্ড:</b>\n" +
       "• <code>/stop</code> — সব পাইপলাইন বন্ধ করুন\n" +
       "• <code>/resume</code> — পাইপলাইন আবার চালু করুন\n" +
-      "• <code>/status</code> — কিল সুইচের বর্তমান অবস্থা দেখুন";
+      "• <code>/status</code> — কিল সুইচের বর্তমান অবস্থা দেখুন\n" +
+      "• <code>/reset</code> — উভয় মেমোরি মুছুন\n" +
+      "• <code>/reset ai</code> — শুধু AI মেমোরি মুছুন\n" +
+      "• <code>/reset tech</code> — শুধু Tech মেমোরি মুছুন";
 
     await sendReply(chatId, messageId, helpText);
     return NextResponse.json({ ok: true });

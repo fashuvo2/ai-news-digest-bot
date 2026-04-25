@@ -1,0 +1,47 @@
+name: Reset Memory
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Namespace to reset'
+        required: true
+        type: choice
+        options:
+          - all
+          - ai
+          - tech
+
+jobs:
+  reset:
+    name: Reset ${{ github.event.inputs.namespace }} memory
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send reset request to /api/reset
+        run: |
+          if [ "${{ github.event.inputs.namespace }}" = "all" ]; then
+            BODY='{}'
+          else
+            BODY='{"ns":"${{ github.event.inputs.namespace }}"}'
+          fi
+
+          HTTP_STATUS=$(curl \
+            --silent \
+            --output /tmp/response.json \
+            --write-out "%{http_code}" \
+            --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --header "Content-Type: application/json" \
+            --data "$BODY" \
+            "https://${{ secrets.VERCEL_APP_URL }}/api/reset")
+
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response body:"
+          cat /tmp/response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "ERROR: API returned HTTP $HTTP_STATUS"
+            exit 1
+          fi
