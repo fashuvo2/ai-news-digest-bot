@@ -18,7 +18,7 @@ import { NextResponse } from "next/server";
 import { fetchRecentArticles, filterPromoArticles } from "@/lib/fetchFeeds";
 import { summarizeBatched } from "@/lib/summarize";
 import { sendBatchedDigest, sendMessage } from "@/lib/telegram";
-import { filterUnseen, markSeen, saveArticles, getAllArticles } from "@/lib/storage";
+import { filterUnseen, markSeen, saveArticles, getAllArticles, getKillSwitch } from "@/lib/storage";
 
 // ── Security guard ─────────────────────────────────────────────────────────────
 
@@ -47,6 +47,16 @@ export async function POST(request) {
   // Step 1 — Authorisation check.
   if (!isAuthorised(request)) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  }
+
+  // Kill switch check — abort immediately if the emergency stop is active.
+  const killed = await getKillSwitch();
+  if (killed) {
+    console.log("[digest] Kill switch is active — aborting run.");
+    return NextResponse.json(
+      { status: "stopped", reason: "kill switch active" },
+      { status: 503 }
+    );
   }
 
   console.log("[digest] Starting digest run…");
