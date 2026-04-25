@@ -1,0 +1,40 @@
+name: Kill Switch
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - stop
+          - resume
+
+jobs:
+  kill-switch:
+    name: ${{ github.event.inputs.action == 'stop' && 'Stop all pipelines' || 'Resume all pipelines' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send kill switch action to /api/stop
+        run: |
+          HTTP_STATUS=$(curl \
+            --silent \
+            --output /tmp/response.json \
+            --write-out "%{http_code}" \
+            --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --header "Content-Type: application/json" \
+            --data '{"action":"${{ github.event.inputs.action }}"}' \
+            "https://${{ secrets.VERCEL_APP_URL }}/api/stop")
+
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response body:"
+          cat /tmp/response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "ERROR: API returned HTTP $HTTP_STATUS"
+            exit 1
+          fi
