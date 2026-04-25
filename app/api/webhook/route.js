@@ -13,7 +13,7 @@
  */
 
 import { NextResponse, after } from "next/server";
-import { getArticle, getArticleCount, markUpdateSeen } from "@/lib/storage";
+import { getArticle, getArticleCount, markUpdateSeen, getKillSwitch, setKillSwitch, clearKillSwitch, clearQueue } from "@/lib/storage";
 import { deepDiveArticle } from "@/lib/deepDive";
 import { sendReply } from "@/lib/telegram";
 
@@ -28,6 +28,16 @@ function isAuthorised(request) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!secret) return true; // no secret configured — open (set one in production)
   return request.headers.get("x-telegram-bot-api-secret-token") === secret;
+}
+
+/**
+ * Returns true if chatId is allowed to use admin commands (/stop, /resume, /status).
+ * If ADMIN_CHAT_ID is not set, all chats are allowed (safe for personal bots).
+ */
+function isAdmin(chatId) {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (!adminId) return true;
+  return String(chatId) === String(adminId);
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -60,6 +70,38 @@ export async function POST(request) {
   const messageId = message.message_id;
   const text = message.text.trim();
 
+  // ── Kill switch commands ─────────────────────────────────────────────────────
+  if (text === "/stop" || text === "/resume" || text === "/status") {
+    if (!isAdmin(chatId)) {
+      return NextResponse.json({ ok: true }); // silently ignore non-admin
+    }
+
+    try {
+      if (text === "/stop") {
+        await setKillSwitch();
+        await clearQueue("tech");
+        await clearQueue("ai");
+        await sendReply(chatId, messageId, "🛑 Kill switch activated. All pipelines stopped.");
+      } else if (text === "/resume") {
+        await clearKillSwitch();
+        await sendReply(chatId, messageId, "✅ Kill switch cleared. Pipelines resumed.");
+      } else {
+        const active = await getKillSwitch();
+        await sendReply(
+          chatId,
+          messageId,
+          active
+            ? "🔴 Kill switch is <b>active</b>. Pipelines are stopped."
+            : "🟢 Kill switch is <b>inactive</b>. Pipelines are running normally."
+        );
+      }
+    } catch (err) {
+      console.error("[webhook] Kill switch command error:", err);
+      await sendReply(chatId, messageId, "⚠️ কমান্ড প্রক্রিয়া করতে সমস্যা হয়েছে। একটু পরে আবার চেষ্টা করুন।").catch(() => {});
+    }
+    return NextResponse.json({ ok: true });
+  }
+
   // ── /help command ────────────────────────────────────────────────────────────
   if (text === "/help" || text === "/start") {
     const helpText =
@@ -68,7 +110,11 @@ export async function POST(request) {
       "<b>উদাহরণ:</b>\n" +
       "• <code>3</code> — ৩ নম্বর আর্টিকেলের বিস্তারিত বিশ্লেষণ পান\n" +
       "• <code>1,3,5</code> — একসাথে একাধিক আর্টিকেলের বিশ্লেষণ পান\n\n" +
-      "ডাইজেস্ট আসার পর ১৩ ঘণ্টার মধ্যে যেকোনো আর্টিকেলের নম্বর পাঠাতে পারবেন।";
+      "ডাইজেস্ট আসার পর ১৩ ঘণ্টার মধ্যে যেকোনো আর্টিকেলের নম্বর পাঠাতে পারবেন।\n\n" +
+      "<b>অ্যাডমিন কমান্ড:</b>\n" +
+      "• <code>/stop</code> — সব পাইপলাইন বন্ধ করুন\n" +
+      "• <code>/resume</code> — পাইপলাইন আবার চালু করুন\n" +
+      "• <code>/status</code> — কিল সুইচের বর্তমান অবস্থা দেখুন";
 
     await sendReply(chatId, messageId, helpText);
     return NextResponse.json({ ok: true });
@@ -80,6 +126,12 @@ export async function POST(request) {
     // Return 200 immediately so Telegram won't retry, then process in background.
     after(async () => {
       try {
+        const killed = await getKillSwitch();
+        if (killed) {
+          await sendReply(chatId, messageId, "⏸️ Deep-dives are currently paused.");
+          return;
+        }
+
         const article = await getArticle(num, "ai");
 
         if (!article) {
@@ -117,24 +169,34 @@ export async function POST(request) {
   if (isValidList) {
     // Return 200 immediately — multiple deep-dives will far exceed Telegram's timeout.
     after(async () => {
-      await sendReply(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`);
-      for (const num of commaNums) {
-        try {
-          const article = await getArticle(num, "ai");
-          if (!article) {
-            await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`);
-            continue;
-          }
-          await sendReply(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`);
-          const { analysis, usage } = await deepDiveArticle(article);
-          const footer =
-            "\n——————————————\n" +
-            `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
-          await sendReply(chatId, messageId, analysis + footer);
-        } catch (err) {
-          console.error(`[webhook] Deep-dive error for article ${num}:`, err);
-          await sendReply(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`);
+      try {
+        const killed = await getKillSwitch();
+        if (killed) {
+          await sendReply(chatId, messageId, "⏸️ Deep-dives are currently paused.");
+          return;
         }
+
+        await sendReply(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`);
+        for (const num of commaNums) {
+          try {
+            const article = await getArticle(num, "ai");
+            if (!article) {
+              await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`);
+              continue;
+            }
+            await sendReply(chatId, messageId, `⏳ <b>${article.title}</b> (${num}) — বিশ্লেষণ তৈরি হচ্ছে…`);
+            const { analysis, usage } = await deepDiveArticle(article);
+            const footer =
+              "\n——————————————\n" +
+              `📊 টোকেন: ${usage.total_tokens.toLocaleString("bn-BD")}`;
+            await sendReply(chatId, messageId, analysis + footer);
+          } catch (err) {
+            console.error(`[webhook] Deep-dive error for article ${num}:`, err);
+            await sendReply(chatId, messageId, `⚠️ ${num} নম্বর আর্টিকেলের বিশ্লেষণে সমস্যা হয়েছে।`);
+          }
+        }
+      } catch (err) {
+        console.error("[webhook] Comma-list deep-dive error:", err);
       }
     });
     return NextResponse.json({ ok: true });
