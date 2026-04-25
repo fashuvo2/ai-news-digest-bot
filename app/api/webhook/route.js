@@ -179,6 +179,12 @@ export async function POST(request) {
         await sendReply(chatId, messageId, `⏳ ${commaNums.length}টি আর্টিকেলের বিশ্লেষণ শুরু হচ্ছে…`);
         for (const num of commaNums) {
           try {
+            const killed = await getKillSwitch();
+            if (killed) {
+              await sendReply(chatId, messageId, "⏸️ Deep-dives are currently paused.");
+              return;
+            }
+
             const article = await getArticle(num, "ai");
             if (!article) {
               await sendReply(chatId, messageId, `❌ ${num} নম্বর আর্টিকেল পাওয়া যায়নি।`);
